@@ -78,6 +78,26 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     return btoa(result);
 }
 
+async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+    const response = await fetch(dataUrl);
+    return response.blob();
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            if (typeof reader.result === 'string') {
+                resolve(reader.result);
+            } else {
+                reject(new Error('Failed to convert blob to data URL.'));
+            }
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
 interface PdfPoint {
   pageIndex: number;
   relX: number;
@@ -179,7 +199,7 @@ export default function Home() {
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!originalPdfFile) {
         toast({
             title: "Cannot Save",
@@ -198,6 +218,19 @@ export default function Home() {
         return;
     }
 
+    const snapshotsWithBase64 = await Promise.all(snapshots.map(async (snapshot) => {
+        const blob = await fetch(snapshot.imageDataUrl).then(r => r.blob());
+        const dataUrl = await blobToDataUrl(blob);
+        return { ...snapshot, imageDataUrl: dataUrl };
+    }));
+
+    const uploadedImagesWithBase64 = await Promise.all(uploadedImages.map(async (image) => {
+        const blob = await fetch(image.imageDataUrl).then(r => r.blob());
+        const dataUrl = await blobToDataUrl(blob);
+        return { ...image, imageDataUrl: dataUrl };
+    }));
+
+
     const pdfDataBase64 = arrayBufferToBase64(originalPdfFile.slice(0));
 
     const projectData = {
@@ -205,10 +238,10 @@ export default function Home() {
         pdfDataBase64: pdfDataBase64,
         pdfAnnotations: pdfAnnotationData,
         pinupAnnotations: pinupAnnotationData,
-        snapshots: snapshots,
+        snapshots: snapshotsWithBase64,
         inklings: inklings,
         notes: notes,
-        uploadedImages: uploadedImages,
+        uploadedImages: uploadedImagesWithBase64,
         pinupBgColor: pinupBgColor,
         viewerWidth: viewerWidth,
         fileType: 'inkling-project'
@@ -272,10 +305,15 @@ export default function Home() {
       setPageImages([]);
       pdfCanvasRef.current?.clear();
       pinupCanvasRef.current?.clear();
+      
+      snapshots.forEach(s => URL.revokeObjectURL(s.imageDataUrl));
       setSnapshots([]);
+      
+      uploadedImages.forEach(i => URL.revokeObjectURL(i.imageDataUrl));
+      setUploadedImages([]);
+
       setInklings([]);
       setNotes([]);
-      setUploadedImages([]);
       setAnnotationDataToLoad(null);
       setPinupAnnotationDataToLoad(null);
       setPdfDoc(null);
@@ -347,12 +385,31 @@ export default function Home() {
                   pdfCanvasRef.current?.clear();
                   pinupCanvasRef.current?.clear();
 
+                  // Revoke existing blob URLs before loading new ones
+                  snapshots.forEach(s => URL.revokeObjectURL(s.imageDataUrl));
+                  uploadedImages.forEach(i => URL.revokeObjectURL(i.imageDataUrl));
+
+                  const projectSnapshots = projectData.snapshots || [];
+                  const projectImages = projectData.uploadedImages || [];
+
+                  const snapshotsWithBlobUrls = await Promise.all(projectSnapshots.map(async (snapshot: Snapshot) => {
+                      const blob = await dataUrlToBlob(snapshot.imageDataUrl);
+                      const blobUrl = URL.createObjectURL(blob);
+                      return { ...snapshot, imageDataUrl: blobUrl };
+                  }));
+
+                  const imagesWithBlobUrls = await Promise.all(projectImages.map(async (image: UploadedImage) => {
+                      const blob = await dataUrlToBlob(image.imageDataUrl);
+                      const blobUrl = URL.createObjectURL(blob);
+                      return { ...image, imageDataUrl: blobUrl };
+                  }));
+
                   setOriginalPdfFile(arrayBuffer.slice(0));
                   setOriginalPdfFileName(projectData.originalPdfFileName || file.name.replace(/\.json$/i, ".pdf"));
-                  setSnapshots(projectData.snapshots || []);
+                  setSnapshots(snapshotsWithBlobUrls);
                   setInklings(projectData.inklings || []);
                   setNotes(projectData.notes || []);
-                  setUploadedImages(projectData.uploadedImages || []);
+                  setUploadedImages(imagesWithBlobUrls);
                   setAnnotationDataToLoad(projectData.pdfAnnotations || null);
                   setPinupAnnotationDataToLoad(projectData.pinupAnnotations || null);
                   setPinupBgColor(projectData.pinupBgColor || '#ffffff');
@@ -404,14 +461,16 @@ export default function Home() {
 
     const reader = new FileReader();
     reader.onload = (event) => {
-        const imageDataUrl = event.target?.result as string;
+        const dataUrl = event.target?.result as string;
         const img = new Image();
-        img.onload = () => {
+        img.onload = async () => {
+            const blob = await dataUrlToBlob(dataUrl);
+            const blobUrl = URL.createObjectURL(blob);
             const maxWidth = 300;
             const scale = Math.min(1, maxWidth / img.width);
             const newImage: UploadedImage = {
                 id: `image_${Date.now()}`,
-                imageDataUrl,
+                imageDataUrl: blobUrl,
                 x: 50,
                 y: 50,
                 width: img.width * scale,
@@ -423,7 +482,7 @@ export default function Home() {
                 description: "The image has been added to your pinup board.",
             });
         };
-        img.src = imageDataUrl;
+        img.src = dataUrl;
     };
     reader.readAsDataURL(file);
 
@@ -443,9 +502,15 @@ export default function Home() {
     setPdfDoc(null);
     
     pinupCanvasRef.current?.clear();
+
+    snapshots.forEach(s => URL.revokeObjectURL(s.imageDataUrl));
     setSnapshots([]);
+    
     setNotes([]);
+
+    uploadedImages.forEach(i => URL.revokeObjectURL(i.imageDataUrl));
     setUploadedImages([]);
+
     setInklings([]);
     setPinupAnnotationDataToLoad(null);
 
@@ -467,12 +532,15 @@ export default function Home() {
     setTool(null);
   }, []);
 
-  const handleColorSelect = (color: string | null) => {
+  const handleColorSelect = async (color: string | null) => {
     if (!pendingSnapshot) return;
+
+    const blob = await dataUrlToBlob(pendingSnapshot.imageDataUrl);
+    const blobUrl = URL.createObjectURL(blob);
 
     const newSnapshot: Snapshot = {
       id: `snapshot_${Date.now()}`,
-      imageDataUrl: pendingSnapshot.imageDataUrl,
+      imageDataUrl: blobUrl,
       x: 50,
       y: 50,
       width: 250,
@@ -500,7 +568,13 @@ export default function Home() {
   }, []);
 
   const deleteSnapshot = React.useCallback((id: string) => {
-    setSnapshots(snapshots => snapshots.filter(s => s.id !== id));
+    setSnapshots(snapshots => {
+      const snapshotToDelete = snapshots.find(s => s.id === id);
+      if (snapshotToDelete) {
+          URL.revokeObjectURL(snapshotToDelete.imageDataUrl);
+      }
+      return snapshots.filter(s => s.id !== id);
+    });
     setInklings(inklings => inklings.filter(i => !(i.pinupPoint.targetType === 'snapshot' && i.pinupPoint.targetId === id)));
   }, []);
 
@@ -528,7 +602,13 @@ export default function Home() {
   }, []);
 
   const deleteUploadedImage = React.useCallback((id: string) => {
-    setUploadedImages(images => images.filter(i => i.id !== id));
+    setUploadedImages(images => {
+      const imageToDelete = images.find(i => i.id === id);
+      if (imageToDelete) {
+          URL.revokeObjectURL(imageToDelete.imageDataUrl);
+      }
+      return images.filter(i => i.id !== id);
+    });
     setInklings(inklings => inklings.filter(i => !(i.pinupPoint.targetType === 'image' && i.pinupPoint.targetId === id)));
   }, []);
 
@@ -924,23 +1004,9 @@ export default function Home() {
                           fill="none"
                           xmlns="http://www.w3.org/2000/svg"
                         >
-                          <path
-                            d="M2.5 7.5C2.5 4.73858 4.73858 2.5 7.5 2.5C10.2614 2.5 12.5 4.73858 12.5 7.5C12.5 10.2614 10.2614 12.5 7.5 12.5C4.73858 12.5 2.5 10.2614 2.5 7.5Z"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                          />
-                          <path
-                            d="M7.5 2.5C5.43764 3.55104 4.5 5.39957 4.5 7.5C4.5 9.60043 5.43764 11.449 7.5 12.5"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                          />
-                          <path
-                            d="M7.5 2.5C9.56236 3.55104 10.5 5.39957 10.5 7.5C10.5 9.60043 9.56236 11.449 7.5 12.5"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                          />
-                           <circle cx="2" cy="7.5" r="1.5" fill="currentColor" />
-                           <circle cx="13" cy="7.5" r="1.5" fill="currentColor" />
+                          <path d="M4 4C4 11 11 4 11 11" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                          <circle cx="4" cy="4" r="1.5" fill="currentColor" />
+                          <circle cx="11" cy="11" r="1.5" fill="currentColor" />
                         </svg>
                       </Button>
                     </TooltipTrigger>
