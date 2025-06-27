@@ -13,6 +13,7 @@ export interface Note {
     y: number;
     width: number;
     height: number;
+    color?: string;
 }
   
 interface NoteItemProps {
@@ -22,9 +23,10 @@ interface NoteItemProps {
     onClick: (e: React.MouseEvent<HTMLDivElement>) => void;
     isSelected: boolean;
     containerRef: React.RefObject<HTMLDivElement>;
+    availableColors: string[];
 }
 
-export const NoteItem: React.FC<NoteItemProps> = ({ note, onUpdate, onDelete, onClick, isSelected, containerRef }) => {
+export const NoteItem: React.FC<NoteItemProps> = ({ note, onUpdate, onDelete, onClick, isSelected, containerRef, availableColors }) => {
     const itemRef = useRef<HTMLDivElement>(null);
     const interactionRef = useRef<{
         type: 'drag' | 'resize';
@@ -229,21 +231,46 @@ export const NoteItem: React.FC<NoteItemProps> = ({ note, onUpdate, onDelete, on
                 width: note.width,
                 height: note.height,
                 transform: `translate(${note.x}px, ${note.y}px)`,
-                touchAction: 'none'
+                touchAction: 'none',
+                backgroundColor: note.color
             }}
             className={cn(
-                "shadow-lg bg-yellow-200 rounded-md flex flex-col",
-                isSelected ? "z-10" : "z-0",
+                "shadow-lg rounded-md flex flex-col",
+                isSelected ? "z-20" : "z-10",
             )}
             onClick={handleBodyClick}
             data-ai-hint="sticky note"
             data-note-id={note.id}
         >
+            {isSelected && (
+                <div
+                    onMouseDown={(e) => e.stopPropagation()}
+                    className="absolute -top-9 left-1/2 flex -translate-x-1/2 cursor-default items-center gap-1 rounded-md border bg-card p-1 shadow-lg"
+                >
+                    {availableColors.map((color) => (
+                        <button
+                            key={color}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onUpdate(note.id, { color });
+                            }}
+                            className={cn(
+                                'h-5 w-5 rounded-full border-2 transition-transform hover:scale-110',
+                                note.color === color
+                                    ? 'border-primary ring-2 ring-primary/50'
+                                    : 'border-background'
+                            )}
+                            style={{ backgroundColor: color }}
+                            aria-label={`Set color to ${color}`}
+                        />
+                    ))}
+                </div>
+            )}
             <div
                 data-drag-handle="true"
                 onMouseDown={(e) => handleInteractionStart(e, 'drag')}
                 onTouchStart={(e) => handleInteractionStart(e, 'drag')}
-                className="h-6 bg-yellow-300 rounded-t-md flex items-center justify-center text-gray-600/70 cursor-grab active:cursor-grabbing"
+                className="h-6 bg-black/10 rounded-t-md flex items-center justify-center text-gray-600/70 cursor-grab active:cursor-grabbing"
             >
             </div>
              <div className={cn(

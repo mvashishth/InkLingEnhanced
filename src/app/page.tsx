@@ -65,7 +65,7 @@ if (typeof window !== 'undefined') {
 
 type Tool = 'draw' | 'erase' | 'highlight' | 'snapshot' | 'inkling' | 'note';
 const COLORS = ['#1A1A1A', '#EF4444', '#3B82F6', '#22C55E', '#EAB308'];
-const SNAPSHOT_COLORS = ['#FCA5A5', '#93C5FD', '#A7F3D0', '#FDE68A', '#D8B4FE', '#F9A8D4', '#FDBA74', '#CBD5E1', '#6EE7B7', '#A5B4FC'];
+const HIGHLIGHT_COLORS = ['#FEF3C7', '#FCA5A5', '#93C5FD', '#A7F3D0', '#FDE68A', '#D8B4FE', '#F9A8D4', '#FDBA74', '#CBD5E1', '#6EE7B7', '#A5B4FC'];
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
     const CHUNK_SIZE = 0x8000;
@@ -582,6 +582,7 @@ export default function Home() {
     const newNote: Note = {
       id: `note_${Date.now()}`,
       content: '',
+      color: HIGHLIGHT_COLORS[0],
       ...rect,
     };
     setNotes(prev => [...prev, newNote]);
@@ -1353,6 +1354,7 @@ export default function Home() {
                         onClick={(e) => handleNoteClick(note, e)}
                         isSelected={selectedNote === note.id}
                         containerRef={pinupContainerRef}
+                        availableColors={HIGHLIGHT_COLORS}
                       />
                     ))}
                     {uploadedImages.map(image => (
@@ -1443,7 +1445,7 @@ export default function Home() {
               </DialogDescription>
             </DialogHeader>
             <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
-              {SNAPSHOT_COLORS.map((color) => (
+              {HIGHLIGHT_COLORS.map((color) => (
                 <Tooltip key={color}>
                   <TooltipTrigger asChild>
                     <button
