@@ -10,6 +10,8 @@ import React, {
   useCallback,
 } from 'react';
 import { cn } from '@/lib/utils';
+import { type Snapshot } from './snapshot-item';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 
 interface Point {
   x: number;
@@ -50,9 +52,11 @@ interface DrawingCanvasProps {
   isProjectLoading: boolean;
   onProjectLoadComplete: () => void;
   toast: (options: { title: string; description: string; variant?: 'default' | 'destructive' }) => void;
-  onSnapshot?: (imageDataUrl: string, pageIndex: number, rect: { x: number; y: number; width: number; height: number }) => void;
+  onSnapshot?: (imageDataUrl: string, pageIndex: number, rect: { relX: number; relY: number; relWidth: number; relHeight: number }, aspectRatio: number) => void;
   onNoteCreate?: (rect: { x: number; y: number; width: number; height: number }) => void;
   onCanvasClick?: (pageIndex: number, point: Point, canvas: HTMLCanvasElement) => void;
+  snapshotHighlights?: Snapshot[];
+  pdfDoc: PDFDocumentProxy | null;
 }
 
 interface PageProps {
@@ -60,15 +64,12 @@ interface PageProps {
   index: number;
   tool: DrawingCanvasProps['tool'];
   currentSelection: { pageIndex: number; startX: number; startY: number; endX: number; endY: number} | null;
-  drawingCanvasRefs: React.MutableRefObject<(HTMLCanvasElement | null)[]>;
-  contextRefs: React.MutableRefObject<(CanvasRenderingContext2D | null)[]>;
+  displayCanvasRefs: React.MutableRefObject<(HTMLCanvasElement | null)[]>;
   pageContainerRef: React.RefObject<HTMLDivElement>;
-  pageHistoryRef: React.MutableRefObject<Map<number, ImageData[]>>;
-  pageHistoryIndexRef: React.MutableRefObject<Map<number, number>>;
   isProjectLoading: boolean;
   startDrawing: (e: React.MouseEvent | React.TouchEvent, pageIndex: number) => void;
-  restoreState: (pageIndex: number, historyIndex: number) => void;
-  saveState: (pageIndex: number) => void;
+  setupCanvases: (img: HTMLImageElement, index: number) => void;
+  snapshotHighlights?: Snapshot[];
 }
 
 const Page = React.memo(({ 
@@ -76,53 +77,26 @@ const Page = React.memo(({
   index, 
   tool,
   currentSelection, 
-  drawingCanvasRefs, 
-  contextRefs,
+  displayCanvasRefs, 
   pageContainerRef,
-  pageHistoryRef,
-  pageHistoryIndexRef,
   isProjectLoading,
   startDrawing,
-  restoreState,
-  saveState,
+  setupCanvases,
+  snapshotHighlights,
 }: PageProps) => {
     const imgRef = useRef<HTMLImageElement>(null);
     
     useEffect(() => {
-        const drawingCanvas = drawingCanvasRefs.current[index];
         const image = imgRef.current;
-        if (!drawingCanvas || !image) return;
+        if (!image) return;
 
-        const context = drawingCanvas.getContext('2d', { willReadFrequently: true });
-        if (!context) return;
-        contextRefs.current[index] = context;
-        
         const setCanvasSize = () => {
           if (image.naturalWidth > 0 && pageContainerRef.current) {
-              const containerWidth = pageContainerRef.current.clientWidth;
-              const scale = (containerWidth - 32) / image.naturalWidth; // 32 for padding
-              const width = image.naturalWidth * scale;
-              const height = image.naturalHeight * scale;
-
-              drawingCanvas.width = width;
-              drawingCanvas.height = height;
-              
-              const history = pageHistoryRef.current.get(index) ?? [];
-              const historyIdx = pageHistoryIndexRef.current.get(index) ?? -1;
-
-              if (history.length > 0 && historyIdx > -1 && history[historyIdx]) {
-                restoreState(index, historyIdx);
-              } else if (!isProjectLoading) {
-                if (!pageHistoryRef.current.has(index)) {
-                  pageHistoryRef.current.set(index, []);
-                  pageHistoryIndexRef.current.set(index, -1);
-                  saveState(index);
-                }
-              }
+            setupCanvases(image, index);
           }
         }
 
-        if(image.complete) {
+        if(image.complete && image.naturalWidth > 0) {
           setCanvasSize();
         } else {
           image.onload = setCanvasSize;
@@ -134,13 +108,13 @@ const Page = React.memo(({
         }
         return () => resizeObserver.disconnect();
         
-    }, [index, restoreState, saveState, contextRefs, drawingCanvasRefs, pageContainerRef, pageHistoryRef, pageHistoryIndexRef, isProjectLoading]);
+    }, [index, setupCanvases, pageContainerRef, pageDataUrl]);
 
     return (
         <div className="relative shadow-lg my-4 mx-auto w-fit page-wrapper">
             <img ref={imgRef} src={pageDataUrl} alt={`Page ${index + 1}`} className="block pointer-events-none w-full h-auto max-w-[calc(100vw-2rem)] page-image" data-ai-hint="pdf page" />
             <canvas
-                ref={(el) => (drawingCanvasRefs.current[index] = el)}
+                ref={(el) => (displayCanvasRefs.current[index] = el)}
                 onMouseDown={(e) => startDrawing(e, index)}
                 onTouchStart={(e) => startDrawing(e, index)}
                 className={cn(
@@ -160,6 +134,29 @@ const Page = React.memo(({
                   }}
               />
             )}
+            {snapshotHighlights
+              ?.filter(h => h.sourcePage === index && h.highlightColor)
+              .map(highlight => {
+                const canvas = displayCanvasRefs.current[highlight.sourcePage];
+                if (!canvas) return null;
+                const { width: canvasWidth, height: canvasHeight } = canvas;
+                const { relX, relY, relWidth, relHeight } = highlight.sourceRelRect;
+
+                return (
+                  <div
+                    key={`highlight-${highlight.id}`}
+                    className="absolute pointer-events-none rounded-sm"
+                    style={{
+                      left: relX * canvasWidth,
+                      top: relY * canvasHeight,
+                      width: relWidth * canvasWidth,
+                      height: relHeight * canvasHeight,
+                      backgroundColor: `${highlight.highlightColor}4D`,
+                      border: `2px solid ${highlight.highlightColor}`,
+                    }}
+                  />
+                )
+            })}
         </div>
     )
 });
@@ -167,13 +164,14 @@ Page.displayName = 'Page';
 
 
 export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
-  ({ pages, tool, penColor, penSize, eraserSize, highlighterSize, highlighterColor, onHistoryChange, initialAnnotations, isProjectLoading, onProjectLoadComplete, toast, onSnapshot, onNoteCreate, onCanvasClick }, ref) => {
+  ({ pages, tool, penColor, penSize, eraserSize, highlighterSize, highlighterColor, onHistoryChange, initialAnnotations, isProjectLoading, onProjectLoadComplete, toast, onSnapshot, onNoteCreate, onCanvasClick, snapshotHighlights, pdfDoc }, ref) => {
     const isDrawingRef = useRef(false);
     const hasMovedRef = useRef(false);
 
     const pageContainerRef = useRef<HTMLDivElement>(null);
-    const drawingCanvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
-    const contextRefs = useRef<(CanvasRenderingContext2D | null)[]>([]);
+    const displayCanvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
+    const masterCanvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
+    const masterContextRefs = useRef<(CanvasRenderingContext2D | null)[]>([]);
     
     const lastActivePageRef = useRef<number>(0);
     const pageHistoryRef = useRef(new Map<number, ImageData[]>());
@@ -187,8 +185,10 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
 
 
     useEffect(() => {
-        drawingCanvasRefs.current = drawingCanvasRefs.current.slice(0, pages.length || 1);
-        contextRefs.current = contextRefs.current.slice(0, pages.length || 1);
+        const len = pages.length || 1;
+        displayCanvasRefs.current = displayCanvasRefs.current.slice(0, len);
+        masterCanvasRefs.current = masterCanvasRefs.current.slice(0, len);
+        masterContextRefs.current = masterContextRefs.current.slice(0, len);
     }, [pages]);
     
     useEffect(() => {
@@ -198,6 +198,18 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         }
     }, [tool]);
 
+    const updateDisplayCanvas = useCallback((pageIndex: number) => {
+        const masterCanvas = masterCanvasRefs.current[pageIndex];
+        const displayCanvas = displayCanvasRefs.current[pageIndex];
+        if (!masterCanvas || !displayCanvas) return;
+
+        const displayCtx = displayCanvas.getContext('2d');
+        if (!displayCtx) return;
+
+        displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
+        displayCtx.drawImage(masterCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
+    }, []);
+
     const updateHistoryButtons = useCallback((page: number) => {
         const history = pageHistoryRef.current.get(page) ?? [];
         const index = pageHistoryIndexRef.current.get(page) ?? -1;
@@ -205,11 +217,11 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
     }, [onHistoryChange]);
 
     const saveState = useCallback((pageIndex: number) => {
-      const canvas = drawingCanvasRefs.current[pageIndex];
-      const context = contextRefs.current[pageIndex];
-      if (!canvas || !context || canvas.width === 0 || canvas.height === 0) return;
+      const masterCanvas = masterCanvasRefs.current[pageIndex];
+      const context = masterContextRefs.current[pageIndex];
+      if (!masterCanvas || !context) return;
 
-      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const imageData = context.getImageData(0, 0, masterCanvas.width, masterCanvas.height);
       
       const history = pageHistoryRef.current.get(pageIndex) ?? [];
       const currentIndex = pageHistoryIndexRef.current.get(pageIndex) ?? -1;
@@ -223,10 +235,65 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
 
     const restoreState = useCallback((pageIndex: number, historyIndex: number) => {
         const history = pageHistoryRef.current.get(pageIndex);
-        const context = contextRefs.current[pageIndex];
+        const context = masterContextRefs.current[pageIndex];
         if (!context || !history || !history[historyIndex]) return;
         context.putImageData(history[historyIndex], 0, 0);
-    }, []);
+        updateDisplayCanvas(pageIndex);
+    }, [updateDisplayCanvas]);
+
+    const setupCanvases = useCallback((imageOrContainer: HTMLImageElement | HTMLDivElement, index: number) => {
+        const isImage = imageOrContainer instanceof HTMLImageElement;
+        const displayCanvas = displayCanvasRefs.current[index];
+        if (!displayCanvas) return;
+        
+        let displayWidth, displayHeight;
+        if (isImage) {
+            const pageContainer = pageContainerRef.current;
+            if (!pageContainer) return;
+            const containerWidth = pageContainer.clientWidth;
+            const scale = (containerWidth - 32) / imageOrContainer.naturalWidth;
+            displayWidth = imageOrContainer.naturalWidth * scale;
+            displayHeight = imageOrContainer.naturalHeight * scale;
+        } else {
+            const { width, height } = imageOrContainer.getBoundingClientRect();
+            displayWidth = width;
+            displayHeight = height;
+        }
+        
+        displayCanvas.width = displayWidth;
+        displayCanvas.height = displayHeight;
+
+        const masterCanvas = masterCanvasRefs.current[index] || document.createElement('canvas');
+        masterCanvasRefs.current[index] = masterCanvas;
+        
+        const masterWidth = isImage ? imageOrContainer.naturalWidth : displayWidth;
+        const masterHeight = isImage ? imageOrContainer.naturalHeight : displayHeight;
+        masterCanvas.width = masterWidth;
+        masterCanvas.height = masterHeight;
+
+        const masterContext = masterCanvas.getContext('2d', { willReadFrequently: true });
+        if (!masterContext) return;
+        masterContextRefs.current[index] = masterContext;
+
+        const history = pageHistoryRef.current.get(index) ?? [];
+        const historyIdx = pageHistoryIndexRef.current.get(index) ?? -1;
+
+        if (history.length > 0 && historyIdx > -1) {
+            restoreState(index, historyIdx);
+        } else if (!isProjectLoading) {
+            if (!pageHistoryRef.current.has(index)) {
+                masterContext.clearRect(0, 0, masterCanvas.width, masterCanvas.height);
+                const blankState = masterContext.getImageData(0, 0, masterCanvas.width, masterCanvas.height);
+                pageHistoryRef.current.set(index, [blankState]);
+                pageHistoryIndexRef.current.set(index, 0);
+            } else {
+                masterContext.clearRect(0, 0, masterCanvas.width, masterCanvas.height);
+                saveState(index);
+            }
+        }
+        updateHistoryButtons(index);
+    }, [restoreState, saveState, isProjectLoading, updateHistoryButtons]);
+
 
     useEffect(() => {
       if (initialAnnotations && isProjectLoading) {
@@ -259,12 +326,25 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
             pageHistoryRef.current = newHistoryMap;
             pageHistoryIndexRef.current = newHistoryIndexMap;
 
-            newHistoryMap.forEach((_, pageIndex) => {
-                const historyIdx = newHistoryIndexMap.get(pageIndex);
-                if (historyIdx !== undefined) {
-                    restoreState(pageIndex, historyIdx);
+            masterCanvasRefs.current.forEach((canvas, pageIndex) => {
+                if (canvas) {
+                    const historyIdx = pageHistoryIndexRef.current.get(pageIndex) ?? -1;
+                    if (historyIdx > -1) {
+                         restoreState(pageIndex, historyIdx);
+                    } else {
+                        const context = masterContextRefs.current[pageIndex];
+                        if (context) {
+                            context.clearRect(0, 0, canvas.width, canvas.height);
+                            const blankState = context.getImageData(0, 0, canvas.width, canvas.height);
+                            pageHistoryRef.current.set(pageIndex, [blankState]);
+                            pageHistoryIndexRef.current.set(pageIndex, 0);
+                            updateDisplayCanvas(pageIndex);
+                        }
+                    }
+                    updateHistoryButtons(pageIndex);
                 }
             });
+
             onProjectLoadComplete();
 
         } catch(e) {
@@ -278,10 +358,10 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
             pageHistoryIndexRef.current.clear();
         }
       }
-    }, [initialAnnotations, isProjectLoading, toast, restoreState, onProjectLoadComplete]);
+    }, [initialAnnotations, isProjectLoading, restoreState, toast, onProjectLoadComplete, updateHistoryButtons, updateDisplayCanvas]);
 
     const getPoint = useCallback((e: React.MouseEvent | React.TouchEvent | MouseEvent | TouchEvent, canvasIndex: number): Point => {
-      const canvas = drawingCanvasRefs.current[canvasIndex];
+      const canvas = displayCanvasRefs.current[canvasIndex];
       if (!canvas) return { x: 0, y: 0 };
       const rect = canvas.getBoundingClientRect();
       const touch = 'touches' in e ? e.touches[0] : null;
@@ -303,77 +383,117 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         return;
       }
       
-      const context = contextRefs.current[pageIndex];
-      if (!context || !lastPointRef.current) return;
+      const masterContext = masterContextRefs.current[pageIndex];
+      const masterCanvas = masterCanvasRefs.current[pageIndex];
+      const displayCanvas = displayCanvasRefs.current[pageIndex];
+
+      if (!masterContext || !lastPointRef.current || !masterCanvas || !displayCanvas) return;
+      
+      const scaleX = masterCanvas.width / displayCanvas.width;
+      const scaleY = masterCanvas.height / displayCanvas.height;
+
+      const scaledPoint = { x: point.x * scaleX, y: point.y * scaleY };
 
       if (!hasMovedRef.current) {
         hasMovedRef.current = true;
       }
       
       if (tool === 'highlight' && preStrokeImageDataRef.current && currentPathRef.current) {
-        context.putImageData(preStrokeImageDataRef.current, 0, 0);
-        currentPathRef.current.lineTo(point.x, point.y);
-        context.stroke(currentPathRef.current);
+        masterContext.putImageData(preStrokeImageDataRef.current, 0, 0);
+        currentPathRef.current.lineTo(scaledPoint.x, scaledPoint.y);
+        masterContext.stroke(currentPathRef.current);
       } else {
-        context.lineTo(point.x, point.y);
-        context.stroke();
+        masterContext.lineTo(scaledPoint.x, scaledPoint.y);
+        masterContext.stroke();
       }
       
+      updateDisplayCanvas(pageIndex);
       lastPointRef.current = point;
     };
 
-    const stopDrawing = () => {
+    const stopDrawing = async () => {
       if (!isDrawingRef.current) return;
 
       const pageIndex = lastActivePageRef.current;
 
-      if(tool === 'snapshot' && selection) {
+      if (tool === 'snapshot' && selection) {
         const { pageIndex, startX, startY, endX, endY } = selection;
         const x = Math.min(startX, endX);
         const y = Math.min(startY, endY);
         const width = Math.abs(endX - startX);
         const height = Math.abs(endY - startY);
 
-        if (width > 5 && height > 5 && onSnapshot) {
-          const pageImageElement = pageContainerRef.current?.querySelectorAll('.page-image')[pageIndex] as HTMLImageElement;
-          const drawingCanvas = drawingCanvasRefs.current[pageIndex];
-
-          if (pageImageElement && drawingCanvas) {
-            const { naturalWidth, naturalHeight } = pageImageElement;
-            const { width: renderWidth, height: renderHeight } = pageImageElement.getBoundingClientRect();
-            // Fallback to 1 to avoid division by zero if element is not rendered yet
-            const scaleX = naturalWidth / (renderWidth || 1);
-            const scaleY = naturalHeight / (renderHeight || 1);
-
-            const snapshotWidth = width * scaleX;
-            const snapshotHeight = height * scaleY;
-            
-            // Prevent creating empty or invalid canvas
-            if (snapshotWidth > 0 && snapshotHeight > 0) {
-              const tempCanvas = document.createElement('canvas');
-              tempCanvas.width = snapshotWidth;
-              tempCanvas.height = snapshotHeight;
-              const tempCtx = tempCanvas.getContext('2d');
-
-              if (tempCtx) {
-                // Draw the high-resolution page content
-                tempCtx.drawImage(
-                  pageImageElement,
-                  x * scaleX, y * scaleY, snapshotWidth, snapshotHeight,
-                  0, 0, snapshotWidth, snapshotHeight
-                );
-                
-                // Draw the annotations on top, scaled up
-                tempCtx.drawImage(
-                  drawingCanvas,
-                  x, y, width, height,
-                  0, 0, snapshotWidth, snapshotHeight
-                );
-
-                const dataUrl = tempCanvas.toDataURL('image/png');
-                onSnapshot(dataUrl, pageIndex, { x, y, width, height });
-              }
+        if (width > 5 && height > 5 && onSnapshot && pdfDoc) {
+          try {
+            const page = await pdfDoc.getPage(pageIndex + 1);
+            const displayCanvas = displayCanvasRefs.current[pageIndex];
+            if (!displayCanvas) {
+              setSelection(null);
+              isDrawingRef.current = false;
+              return;
             }
+
+            const snapshotScale = 2.0;
+            const viewport = page.getViewport({ scale: snapshotScale });
+            const { width: renderWidth, height: renderHeight } = displayCanvas;
+            const cropWidth = width * (viewport.width / renderWidth);
+            const cropHeight = height * (viewport.height / renderHeight);
+
+            if (cropWidth <= 0 || cropHeight <= 0) {
+                setSelection(null);
+                isDrawingRef.current = false;
+                return;
+            }
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = cropWidth;
+            tempCanvas.height = cropHeight;
+            const tempCtx = tempCanvas.getContext('2d');
+
+            if (tempCtx) {
+              const cropX = x * (viewport.width / renderWidth);
+              const cropY = y * (viewport.height / renderHeight);
+              
+              tempCtx.save();
+              tempCtx.fillStyle = 'white';
+              tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+              tempCtx.translate(-cropX, -cropY);
+              await page.render({ canvasContext: tempCtx, viewport: viewport }).promise;
+              tempCtx.restore();
+              
+              const masterCanvas = masterCanvasRefs.current[pageIndex];
+              if (masterCanvas) {
+                  const masterViewport = page.getViewport({ scale: 1.0 });
+                  const sx = x * (masterViewport.width / renderWidth);
+                  const sy = y * (masterViewport.height / renderHeight);
+                  const sWidth = width * (masterViewport.width / renderWidth);
+                  const sHeight = height * (masterViewport.height / renderHeight);
+
+                  tempCtx.drawImage(
+                      masterCanvas,
+                      sx, sy, sWidth, sHeight,
+                      0, 0, cropWidth, cropHeight
+                  );
+              }
+
+              const dataUrl = tempCanvas.toDataURL('image/png');
+              const aspectRatio = cropWidth > 0 ? cropHeight / cropWidth : 1;
+              const sourceRelRect = {
+                relX: x / renderWidth,
+                relY: y / renderHeight,
+                relWidth: width / renderWidth,
+                relHeight: height / renderHeight,
+              };
+
+              onSnapshot(dataUrl, pageIndex, sourceRelRect, aspectRatio);
+            }
+          } catch (error) {
+            console.error("Failed to create snapshot:", error);
+            toast({
+              title: "Snapshot Failed",
+              description: "Could not create the snapshot. Please try again.",
+              variant: "destructive",
+            });
           }
         }
         setSelection(null);
@@ -395,30 +515,37 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         return;
       }
       
-      const context = contextRefs.current[pageIndex];
-      if (!context) return;
+      const masterContext = masterContextRefs.current[pageIndex];
+      const masterCanvas = masterCanvasRefs.current[pageIndex];
+      const displayCanvas = displayCanvasRefs.current[pageIndex];
+      if (!masterContext || !masterCanvas || !displayCanvas) return;
+      
+      const scaleX = masterCanvas.width / displayCanvas.width;
       
       if (!hasMovedRef.current && lastPointRef.current) {
         const point = lastPointRef.current;
+        const scaledPoint = { x: point.x * scaleX, y: point.y * scaleX };
+
         if (tool === 'highlight' && preStrokeImageDataRef.current) {
-          context.putImageData(preStrokeImageDataRef.current, 0, 0);
+          masterContext.putImageData(preStrokeImageDataRef.current, 0, 0);
         }
 
-        const size = tool === 'draw' ? penSize : tool === 'highlight' ? highlighterSize : eraserSize;
-        context.fillStyle = tool === 'highlight' ? highlighterColor : penColor;
-        context.beginPath();
-        context.arc(point.x, point.y, size / 2, 0, Math.PI * 2);
-        context.fill();
+        const size = (tool === 'draw' ? penSize : tool === 'highlight' ? highlighterSize : eraserSize) * scaleX;
+        masterContext.fillStyle = tool === 'highlight' ? highlighterColor : penColor;
+        masterContext.beginPath();
+        masterContext.arc(scaledPoint.x, scaledPoint.y, size / 2, 0, Math.PI * 2);
+        masterContext.fill();
+        updateDisplayCanvas(pageIndex);
       }
 
       isDrawingRef.current = false;
       lastPointRef.current = null;
       preStrokeImageDataRef.current = null;
       currentPathRef.current = null;
-      if (context.globalCompositeOperation !== 'source-over') {
-        context.globalCompositeOperation = 'source-over';
+      if (masterContext.globalCompositeOperation !== 'source-over') {
+        masterContext.globalCompositeOperation = 'source-over';
       }
-      context.globalAlpha = 1.0;
+      masterContext.globalAlpha = 1.0;
       saveState(pageIndex);
       updateHistoryButtons(pageIndex);
     };
@@ -463,7 +590,7 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
       if (tool === 'inkling') {
           if (onCanvasClick) {
               const point = getPoint(e, pageIndex);
-              const canvas = drawingCanvasRefs.current[pageIndex];
+              const canvas = displayCanvasRefs.current[pageIndex];
               if (canvas) {
                 onCanvasClick(pageIndex, point, canvas);
               }
@@ -476,40 +603,46 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
       hasMovedRef.current = false;
       lastActivePageRef.current = pageIndex;
       const point = getPoint(e, pageIndex);
+      lastPointRef.current = point;
       
       if (tool === 'snapshot' || tool === 'note') {
         setSelection({ pageIndex, startX: point.x, startY: point.y, endX: point.x, endY: point.y });
         return;
       }
       
-      const context = contextRefs.current[pageIndex];
-      if (!context) return;
-      lastPointRef.current = point;
-      context.lineCap = 'round';
-      context.lineJoin = 'round';
+      const masterContext = masterContextRefs.current[pageIndex];
+      const masterCanvas = masterCanvasRefs.current[pageIndex];
+      const displayCanvas = displayCanvasRefs.current[pageIndex];
+      if (!masterContext || !masterCanvas || !displayCanvas) return;
+
+      const scale = masterCanvas.width / displayCanvas.width;
+      const scaledPoint = { x: point.x * scale, y: point.y * scale };
+      
+      masterContext.lineCap = 'round';
+      masterContext.lineJoin = 'round';
       
       if (tool === 'draw') {
-        context.strokeStyle = penColor;
-        context.lineWidth = penSize;
-        context.globalCompositeOperation = 'source-over';
-        context.globalAlpha = 1.0;
+        masterContext.strokeStyle = penColor;
+        masterContext.lineWidth = penSize * scale;
+        masterContext.globalCompositeOperation = 'source-over';
+        masterContext.globalAlpha = 1.0;
       } else if (tool === 'erase') {
-        context.lineWidth = eraserSize;
-        context.globalCompositeOperation = 'destination-out';
+        masterContext.lineWidth = eraserSize * scale;
+        masterContext.globalCompositeOperation = 'destination-out';
       } else if (tool === 'highlight') {
-        context.strokeStyle = highlighterColor;
-        context.lineWidth = highlighterSize;
-        context.globalCompositeOperation = 'source-over';
-        context.globalAlpha = 0.2;
+        masterContext.strokeStyle = highlighterColor;
+        masterContext.lineWidth = highlighterSize * scale;
+        masterContext.globalCompositeOperation = 'source-over';
+        masterContext.globalAlpha = 0.2;
       }
 
       if (tool === 'highlight') {
-        preStrokeImageDataRef.current = context.getImageData(0, 0, context.canvas.width, context.canvas.height);
+        preStrokeImageDataRef.current = masterContext.getImageData(0, 0, masterCanvas.width, masterCanvas.height);
         currentPathRef.current = new Path2D();
-        currentPathRef.current.moveTo(point.x, point.y);
+        currentPathRef.current.moveTo(scaledPoint.x, scaledPoint.y);
       } else {
-        context.beginPath();
-        context.moveTo(point.x, point.y);
+        masterContext.beginPath();
+        masterContext.moveTo(scaledPoint.x, scaledPoint.y);
       }
     }, [tool, penColor, penSize, eraserSize, highlighterColor, highlighterSize, getPoint, onCanvasClick]);
     
@@ -518,19 +651,21 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         pageHistoryRef.current.clear();
         pageHistoryIndexRef.current.clear();
         for (let i = 0; i < numPages; i++) {
-          // Initial blank state is saved when the Page component mounts and its canvas is sized
+          pageHistoryRef.current.set(i, []);
+          pageHistoryIndexRef.current.set(i, -1);
         }
       },
       exportAsDataURL: () => {
         const pageIndex = lastActivePageRef.current;
-        const drawingCanvas = drawingCanvasRefs.current[pageIndex];
-        if (!drawingCanvas) return;
+        const displayCanvas = displayCanvasRefs.current[pageIndex];
+        const masterCanvas = masterCanvasRefs.current[pageIndex];
+        if (!displayCanvas || !masterCanvas) return;
         
         const pageImage = pageContainerRef.current?.querySelectorAll('.page-image')[pageIndex] as HTMLImageElement;
         
         const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = drawingCanvas.width;
-        tempCanvas.height = drawingCanvas.height;
+        tempCanvas.width = displayCanvas.width;
+        tempCanvas.height = displayCanvas.height;
         const tempCtx = tempCanvas.getContext('2d');
         if (!tempCtx) return;
 
@@ -541,7 +676,7 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
             tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
         }
         
-        tempCtx.drawImage(drawingCanvas, 0, 0);
+        tempCtx.drawImage(masterCanvas, 0, 0, tempCanvas.width, tempCanvas.height);
 
         return { 
           dataUrl: tempCanvas.toDataURL('image/png'),
@@ -549,23 +684,32 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         };
       },
       clear: () => {
-        contextRefs.current.forEach((context, index) => {
-            if (context) {
-              context.clearRect(0,0,context.canvas.width, context.canvas.height);
-            }
-        });
-        
-        pageHistoryRef.current.clear();
-        pageHistoryIndexRef.current.clear();
-        
         const activePage = lastActivePageRef.current;
-        if (pages.length === 0) { // For pinup board
-            if (!pageHistoryRef.current.has(0)) {
-                pageHistoryRef.current.set(0, []);
-                pageHistoryIndexRef.current.set(0, -1);
-                saveState(0);
-            }
+        
+        const clearAndReset = (index: number) => {
+          const masterContext = masterContextRefs.current[index];
+          const masterCanvas = masterCanvasRefs.current[index];
+          if (masterContext && masterCanvas) {
+              masterContext.clearRect(0, 0, masterCanvas.width, masterCanvas.height);
+              
+              const blankState = masterContext.getImageData(0, 0, masterCanvas.width, masterCanvas.height);
+              pageHistoryRef.current.set(index, [blankState]);
+              pageHistoryIndexRef.current.set(index, 0);
+              
+              updateDisplayCanvas(index);
+          }
+        };
+
+        if (pages.length === 0) {
+            clearAndReset(0);
+        } else {
+            masterContextRefs.current.forEach((context, index) => {
+              if (context) {
+                clearAndReset(index);
+              }
+            });
         }
+        
         updateHistoryButtons(activePage);
       },
       undo: () => {
@@ -576,8 +720,6 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
           pageHistoryIndexRef.current.set(page, newIndex);
           restoreState(page, newIndex);
           updateHistoryButtons(page);
-          preStrokeImageDataRef.current = null;
-          currentPathRef.current = null;
         }
       },
       redo: () => {
@@ -589,8 +731,6 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
           pageHistoryIndexRef.current.set(page, newIndex);
           restoreState(page, newIndex);
           updateHistoryButtons(page);
-          preStrokeImageDataRef.current = null;
-          currentPathRef.current = null;
         }
       },
       getAnnotationData: () => {
@@ -607,22 +747,30 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         }
 
         const serializedHistory: [number, SerializableImageData[]][] = [];
+        const newHistoryIndex: [number, number][] = [];
+
         for (const [pageIndex, history] of pageHistoryRef.current.entries()) {
-            if (history.length > 0) {
-              const pageHistory = history.map(imageData => ({
+            const currentHistoryIndex = pageHistoryIndexRef.current.get(pageIndex);
+            
+            if (history.length > 0 && currentHistoryIndex !== undefined && currentHistoryIndex > 0) {
+              const validHistory = history.slice(0, currentHistoryIndex + 1);
+
+              const pageHistory = validHistory.map(imageData => ({
                   width: imageData.width,
                   height: imageData.height,
                   data: uint8ClampedArrayToBase64(imageData.data),
               }));
+              
               serializedHistory.push([pageIndex, pageHistory]);
+              newHistoryIndex.push([pageIndex, validHistory.length - 1]);
             }
         }
-
-        const serializedHistoryIndex = Array.from(pageHistoryIndexRef.current.entries());
+        
+        if (serializedHistory.length === 0) return undefined;
 
         return {
             history: serializedHistory,
-            historyIndex: serializedHistoryIndex,
+            historyIndex: newHistoryIndex,
         };
       },
       getPageElement: (pageIndex: number) => {
@@ -633,48 +781,28 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
     }));
 
     useEffect(() => {
-      if (pages.length === 0) { // Logic for the pinup board canvas
-        const canvas = drawingCanvasRefs.current[0];
-        const context = canvas?.getContext('2d', { willReadFrequently: true });
+      if (pages.length === 0) {
         const container = pageContainerRef.current;
-        if(canvas && context && container) {
-            contextRefs.current[0] = context;
-            const resize = () => {
-                const { width, height } = container.getBoundingClientRect();
-                canvas.width = width;
-                canvas.height = height;
-                
-                const history = pageHistoryRef.current.get(0) ?? [];
-                const historyIdx = pageHistoryIndexRef.current.get(0) ?? -1;
-
-                if (history.length > 0 && historyIdx > -1 && history[historyIdx]) {
-                  restoreState(0, historyIdx);
-                } else if (!isProjectLoading) {
-                  if (!pageHistoryRef.current.has(0)) {
-                    pageHistoryRef.current.set(0, []);
-                    pageHistoryIndexRef.current.set(0, -1);
-                    saveState(0);
-                    updateHistoryButtons(0);
-                  }
-                }
-            }
+        if(container) {
+            const resize = () => setupCanvases(container, 0);
             const resizeObserver = new ResizeObserver(resize);
             resizeObserver.observe(container);
             resize();
             return () => resizeObserver.disconnect();
         }
       }
-    }, [pages.length, saveState, restoreState, updateHistoryButtons, isProjectLoading]);
+    }, [pages.length, setupCanvases]);
 
     if (pages.length === 0) {
         return (
           <div
             ref={pageContainerRef}
             className="w-full h-full"
+            onMouseDownCapture={() => lastActivePageRef.current = 0}
           >
             <div className="relative w-full h-full">
               <canvas
-                ref={el => { if(el) drawingCanvasRefs.current[0] = el}}
+                ref={el => { if(el) displayCanvasRefs.current[0] = el}}
                 onMouseDown={(e) => startDrawing(e, 0)}
                 onTouchStart={(e) => startDrawing(e, 0)}
                 className={cn(
@@ -704,6 +832,28 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
       <div 
         ref={pageContainerRef}
         className="w-full h-full overflow-y-auto bg-muted/20 p-4"
+        onMouseDownCapture={() => {
+            if (pageContainerRef.current) {
+                const pageElements = pageContainerRef.current.querySelectorAll('.page-wrapper');
+                let bestVisiblePage = 0;
+                let maxVisibleHeight = 0;
+
+                pageElements.forEach((el, index) => {
+                    const rect = el.getBoundingClientRect();
+                    const containerRect = pageContainerRef.current!.getBoundingClientRect();
+                    const visibleTop = Math.max(rect.top, containerRect.top);
+                    const visibleBottom = Math.min(rect.bottom, containerRect.bottom);
+                    const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+                    
+                    if (visibleHeight > maxVisibleHeight) {
+                        maxVisibleHeight = visibleHeight;
+                        bestVisiblePage = index;
+                    }
+                });
+                lastActivePageRef.current = bestVisiblePage;
+                updateHistoryButtons(bestVisiblePage);
+            }
+        }}
       >
         <div className="max-w-5xl mx-auto">
             {pages.map((pageDataUrl, index) => (
@@ -713,15 +863,12 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
                   index={index} 
                   tool={tool}
                   currentSelection={selection}
-                  drawingCanvasRefs={drawingCanvasRefs}
-                  contextRefs={contextRefs}
+                  displayCanvasRefs={displayCanvasRefs}
                   pageContainerRef={pageContainerRef}
-                  pageHistoryRef={pageHistoryRef}
-                  pageHistoryIndexRef={pageHistoryIndexRef}
                   isProjectLoading={isProjectLoading}
                   startDrawing={startDrawing}
-                  restoreState={restoreState}
-                  saveState={saveState}
+                  setupCanvases={setupCanvases}
+                  snapshotHighlights={snapshotHighlights}
                 />
             ))}
         </div>

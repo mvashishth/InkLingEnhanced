@@ -13,7 +13,9 @@ export interface Snapshot {
     width: number;
     height: number;
     sourcePage: number;
-    sourceRect: { x: number; y: number; width: number; height: number };
+    sourceRelRect: { relX: number; relY: number; relWidth: number; relHeight: number };
+    aspectRatio: number;
+    highlightColor?: string | null;
 }
   
 interface SnapshotItemProps {
@@ -56,7 +58,7 @@ export const SnapshotItem: React.FC<SnapshotItemProps> = ({ snapshot, onUpdate, 
         let newWidth = width;
         let newHeight = height;
         
-        const aspectRatio = width > 0 && height > 0 ? height / width : 1;
+        const aspectRatio = snapshot.aspectRatio;
         
         if (newWidth > containerWidth) {
           newWidth = containerWidth * 0.7;
@@ -146,8 +148,8 @@ export const SnapshotItem: React.FC<SnapshotItemProps> = ({ snapshot, onUpdate, 
                     const y = interactionRef.current.snapshotY + dy;
                     itemRef.current.style.transform = `translate(${x}px, ${y}px)`;
                 } else if (interactionRef.current.type === 'resize') {
-                    const { snapshotWidth, snapshotHeight } = interactionRef.current;
-                    const aspectRatio = snapshotHeight > 0 && snapshotWidth > 0 ? snapshotHeight / snapshotWidth : 1;
+                    const { snapshotWidth } = interactionRef.current;
+                    const aspectRatio = snapshot.aspectRatio;
                     const newWidth = Math.max(50, snapshotWidth + dx);
                     const newHeight = newWidth * aspectRatio;
 
@@ -185,9 +187,7 @@ export const SnapshotItem: React.FC<SnapshotItemProps> = ({ snapshot, onUpdate, 
                 let newY = interaction.snapshotY;
                 let newWidth = interaction.snapshotWidth;
                 let newHeight = interaction.snapshotHeight;
-                const aspectRatio = interaction.snapshotHeight > 0 && interaction.snapshotWidth > 0 
-                        ? interaction.snapshotHeight / interaction.snapshotWidth 
-                        : 1;
+                const aspectRatio = snapshot.aspectRatio;
 
                 if (interaction.type === 'drag') {
                     newX += dx;
@@ -250,7 +250,7 @@ export const SnapshotItem: React.FC<SnapshotItemProps> = ({ snapshot, onUpdate, 
                 touchAction: 'none'
             }}
             className={cn(
-                "shadow-lg",
+                "shadow-lg relative",
                 isSelected ? "z-10" : "z-0",
             )}
             onMouseDown={(e) => handleInteractionStart(e, 'drag')}
@@ -259,6 +259,12 @@ export const SnapshotItem: React.FC<SnapshotItemProps> = ({ snapshot, onUpdate, 
             data-ai-hint="pdf snapshot"
             data-snapshot-id={snapshot.id}
         >
+            {snapshot.highlightColor && (
+              <div
+                  className="absolute -left-1.5 top-0 h-full w-1.5 rounded-full"
+                  style={{ backgroundColor: snapshot.highlightColor }}
+              />
+            )}
              <div className={cn(
                 "w-full h-full border-2",
                 isSelected ? "border-blue-500 ring-2 ring-blue-500" : "border-transparent hover:border-blue-500/50",

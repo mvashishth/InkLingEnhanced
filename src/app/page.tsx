@@ -21,6 +21,7 @@ import {
   FileImage,
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { DrawingCanvas, type DrawingCanvasRef, type AnnotationData } from '@/components/drawing-canvas';
 import { SnapshotItem, type Snapshot } from '@/components/snapshot-item';
 import { NoteItem, type Note } from '@/components/note-item';
@@ -44,6 +45,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import { cn } from '@/lib/utils';
 import { useToast } from "@/hooks/use-toast";
 import { Progress } from '@/components/ui/progress';
@@ -57,6 +65,7 @@ if (typeof window !== 'undefined') {
 
 type Tool = 'draw' | 'erase' | 'highlight' | 'snapshot' | 'inkling' | 'note';
 const COLORS = ['#1A1A1A', '#EF4444', '#3B82F6', '#22C55E', '#EAB308'];
+const SNAPSHOT_COLORS = ['#FCA5A5', '#93C5FD', '#A7F3D0', '#FDE68A', '#D8B4FE', '#F9A8D4', '#FDBA74', '#CBD5E1', '#6EE7B7', '#A5B4FC'];
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
     const CHUNK_SIZE = 0x8000;
@@ -92,6 +101,12 @@ interface InklingRenderData {
   startCircle: { cx: number; cy: number };
   endCircle: { cx: number; cy: number };
 }
+interface PendingSnapshot {
+  imageDataUrl: string;
+  sourcePage: number;
+  sourceRelRect: { relX: number; relY: number; relWidth: number; relHeight: number };
+  aspectRatio: number;
+}
 
 export default function Home() {
   const [tool, setTool] = React.useState<Tool | null>(null);
@@ -102,6 +117,7 @@ export default function Home() {
   const [highlighterSize, setHighlighterSize] = React.useState(20);
   
   const [pageImages, setPageImages] = React.useState<string[]>([]);
+  const [pdfDoc, setPdfDoc] = React.useState<PDFDocumentProxy | null>(null);
   
   const [isPdfLoading, setIsPdfLoading] = React.useState(false);
   const [isProjectLoading, setIsProjectLoading] = React.useState(false);
@@ -142,6 +158,7 @@ export default function Home() {
   const [inklingRenderData, setInklingRenderData] = React.useState<InklingRenderData[]>([]);
   const [pendingInklingRenderPoint, setPendingInklingRenderPoint] = React.useState<{cx: number, cy: number} | null>(null);
   const [hoveredInkling, setHoveredInkling] = React.useState<string | null>(null);
+  const [pendingSnapshot, setPendingSnapshot] = React.useState<PendingSnapshot | null>(null);
 
   const [isClearConfirmOpen, setIsClearConfirmOpen] = React.useState(false);
   const [viewerWidth, setViewerWidth] = React.useState(40);
@@ -192,6 +209,8 @@ export default function Home() {
         inklings: inklings,
         notes: notes,
         uploadedImages: uploadedImages,
+        pinupBgColor: pinupBgColor,
+        viewerWidth: viewerWidth,
         fileType: 'inkling-project'
     };
     
@@ -249,7 +268,6 @@ export default function Home() {
     setIsPdfLoading(true);
     setPdfLoadProgress(0);
     
-    // For a fresh PDF load, clear everything
     if (!isProjectLoad) {
       setPageImages([]);
       pdfCanvasRef.current?.clear();
@@ -260,6 +278,7 @@ export default function Home() {
       setUploadedImages([]);
       setAnnotationDataToLoad(null);
       setPinupAnnotationDataToLoad(null);
+      setPdfDoc(null);
     }
 
     try {
@@ -267,6 +286,7 @@ export default function Home() {
       loadingTask.onProgress = (progressData) => {};
       
       const pdf = await loadingTask.promise;
+      setPdfDoc(pdf);
       const numPages = pdf.numPages;
       
       if (!isProjectLoad) {
@@ -278,7 +298,7 @@ export default function Home() {
       for (let i = 1; i <= numPages; i++) {
         setPdfLoadProgress(Math.round((i / numPages) * 100));
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2.0 }); 
+        const viewport = page.getViewport({ scale: 1.0 }); 
 
         const canvas = document.createElement('canvas');
         canvas.width = viewport.width;
@@ -299,6 +319,7 @@ export default function Home() {
         variant: "destructive",
       });
       setPageImages([]);
+      setPdfDoc(null);
     } finally {
       setIsPdfLoading(false);
     }
@@ -323,11 +344,9 @@ export default function Home() {
                   const byteArray = new Uint8Array(byteNumbers);
                   const arrayBuffer = byteArray.buffer;
                   
-                  // Clear canvases first
                   pdfCanvasRef.current?.clear();
                   pinupCanvasRef.current?.clear();
 
-                  // Set all data states
                   setOriginalPdfFile(arrayBuffer.slice(0));
                   setOriginalPdfFileName(projectData.originalPdfFileName || file.name.replace(/\.json$/i, ".pdf"));
                   setSnapshots(projectData.snapshots || []);
@@ -336,8 +355,9 @@ export default function Home() {
                   setUploadedImages(projectData.uploadedImages || []);
                   setAnnotationDataToLoad(projectData.pdfAnnotations || null);
                   setPinupAnnotationDataToLoad(projectData.pinupAnnotations || null);
+                  setPinupBgColor(projectData.pinupBgColor || '#ffffff');
+                  setViewerWidth(projectData.viewerWidth || 40);
                   
-                  // Load the PDF pages, which will trigger canvas setup
                   await loadPdf(arrayBuffer.slice(0), true);
               } else {
                   throw new Error("Invalid project file format.");
@@ -415,14 +435,13 @@ export default function Home() {
   };
   
   const handleConfirmClear = () => {
-    // Clear PDF viewer
     pdfCanvasRef.current?.clear();
     setPageImages([]);
     setOriginalPdfFile(null);
     setOriginalPdfFileName(null);
     setAnnotationDataToLoad(null);
+    setPdfDoc(null);
     
-    // Clear Pinup board
     pinupCanvasRef.current?.clear();
     setSnapshots([]);
     setNotes([]);
@@ -436,24 +455,48 @@ export default function Home() {
   const handleSnapshot = React.useCallback((
     imageDataUrl: string,
     sourcePage: number,
-    sourceRect: { x: number; y: number; width: number; height: number }
+    sourceRelRect: { relX: number; relY: number; relWidth: number; relHeight: number },
+    aspectRatio: number
   ) => {
-    const newSnapshot: Snapshot = {
-      id: `snapshot_${Date.now()}`,
+    setPendingSnapshot({
       imageDataUrl,
-      x: 50,
-      y: 50,
-      width: sourceRect.width,
-      height: sourceRect.height,
       sourcePage,
-      sourceRect,
-    };
-    setSnapshots((prev) => [...prev, newSnapshot]);
+      sourceRelRect,
+      aspectRatio,
+    });
     setTool(null);
   }, []);
 
+  const handleColorSelect = (color: string | null) => {
+    if (!pendingSnapshot) return;
+
+    const newSnapshot: Snapshot = {
+      id: `snapshot_${Date.now()}`,
+      imageDataUrl: pendingSnapshot.imageDataUrl,
+      x: 50,
+      y: 50,
+      width: 250,
+      height: 250 * pendingSnapshot.aspectRatio,
+      sourcePage: pendingSnapshot.sourcePage,
+      sourceRelRect: pendingSnapshot.sourceRelRect,
+      aspectRatio: pendingSnapshot.aspectRatio,
+      highlightColor: color,
+    };
+    setSnapshots((prev) => [...prev, newSnapshot]);
+    setPendingSnapshot(null);
+  };
+
   const updateSnapshot = React.useCallback((id: string, newProps: Partial<Omit<Snapshot, 'id'>>) => {
-    setSnapshots(snapshots => snapshots.map(s => s.id === id ? {...s, ...newProps} : s));
+    setSnapshots(snapshots => snapshots.map(s => {
+      if (s.id === id) {
+        const updatedSnapshot = {...s, ...newProps};
+        if (newProps.width && s.aspectRatio) {
+          updatedSnapshot.height = newProps.width * s.aspectRatio;
+        }
+        return updatedSnapshot;
+      }
+      return s;
+    }));
   }, []);
 
   const deleteSnapshot = React.useCallback((id: string) => {
@@ -524,11 +567,19 @@ export default function Home() {
     const scrollContainer = pdfCanvasRef.current?.getScrollContainer();
     const pageElement = pdfCanvasRef.current?.getPageElement(snapshot.sourcePage);
     if (pageElement && scrollContainer) {
-      const containerRect = scrollContainer.getBoundingClientRect();
-      
-      const rectCenterY_relative = snapshot.sourceRect.y + (snapshot.sourceRect.height / 2);
-      const pointY_absolute = pageElement.offsetTop + rectCenterY_relative;
+      const pageCanvas = pageElement.querySelector('canvas');
+      if (!pageCanvas) return;
 
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const pageCanvasHeight = pageCanvas.getBoundingClientRect().height;
+      
+      const { relY, relHeight } = snapshot.sourceRelRect;
+
+      const rectY_pixels = relY * pageCanvasHeight;
+      const rectHeight_pixels = relHeight * pageCanvasHeight;
+      const rectCenterY_pixels = rectY_pixels + (rectHeight_pixels / 2);
+
+      const pointY_absolute = pageElement.offsetTop + rectCenterY_pixels;
       const targetScrollTop = pointY_absolute - (containerRect.height / 2);
 
       scrollContainer.scrollTo({
@@ -626,7 +677,7 @@ export default function Home() {
     const inkling = inklings.find(i => i.id === inklingId);
     if (!inkling) return;
 
-    if (endpoint === 'pinup') { // Clicked on pinup, scroll PDF
+    if (endpoint === 'pinup') {
       const scrollContainer = pdfCanvasRef.current?.getScrollContainer();
       const pageElement = pdfCanvasRef.current?.getPageElement(inkling.pdfPoint.pageIndex);
       if (pageElement && scrollContainer) {
@@ -639,7 +690,7 @@ export default function Home() {
 
         scrollContainer.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
       }
-    } else { // 'pdf' endpoint clicked, go to pinup item
+    } else {
       const { targetId, targetType, relY } = inkling.pinupPoint;
 
       const pinupScrollContainer = pinupScrollContainerRef.current;
@@ -866,7 +917,31 @@ export default function Home() {
                         className="h-10 w-10 rounded-lg"
                         disabled={pageImages.length === 0}
                       >
-                        <LinkIcon className="h-5 w-5" />
+                        <svg
+                          width="20"
+                          height="20"
+                          viewBox="0 0 15 15"
+                          fill="none"
+                          xmlns="http://www.w3.org/2000/svg"
+                        >
+                          <path
+                            d="M2.5 7.5C2.5 4.73858 4.73858 2.5 7.5 2.5C10.2614 2.5 12.5 4.73858 12.5 7.5C12.5 10.2614 10.2614 12.5 7.5 12.5C4.73858 12.5 2.5 10.2614 2.5 7.5Z"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                          />
+                          <path
+                            d="M7.5 2.5C5.43764 3.55104 4.5 5.39957 4.5 7.5C4.5 9.60043 5.43764 11.449 7.5 12.5"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                          />
+                          <path
+                            d="M7.5 2.5C9.56236 3.55104 10.5 5.39957 10.5 7.5C10.5 9.60043 9.56236 11.449 7.5 12.5"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                          />
+                           <circle cx="2" cy="7.5" r="1.5" fill="currentColor" />
+                           <circle cx="13" cy="7.5" r="1.5" fill="currentColor" />
+                        </svg>
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom"><p>Create Link</p></TooltipContent>
@@ -1076,6 +1151,8 @@ export default function Home() {
                 toast={toast}
                 onSnapshot={handleSnapshot}
                 onCanvasClick={handleCanvasClick}
+                snapshotHighlights={snapshots}
+                pdfDoc={pdfDoc}
               />
             </div>
           </div>
@@ -1183,6 +1260,7 @@ export default function Home() {
                         onProjectLoadComplete={() => setIsProjectLoading(false)}
                         toast={toast}
                         onNoteCreate={handleNoteCreate}
+                        pdfDoc={null}
                     />
                     {snapshots.map(snapshot => (
                       <SnapshotItem 
@@ -1242,11 +1320,9 @@ export default function Home() {
                         className="transition-all pointer-events-none"
                     />
 
-                    {/* Visible dots */}
                     <circle cx={data.startCircle.cx} cy={data.startCircle.cy} r="4" fill={hoveredInkling === data.id ? 'hsl(var(--destructive))' : 'hsl(var(--primary))'} className="transition-all pointer-events-none"/>
                     <circle cx={data.endCircle.cx} cy={data.endCircle.cy} r="4" fill={hoveredInkling === data.id ? 'hsl(var(--destructive))' : 'hsl(var(--primary))'} className="transition-all pointer-events-none"/>
 
-                    {/* Clickable areas for endpoints */}
                     <circle cx={data.startCircle.cx} cy={data.startCircle.cy} r="10" fill="transparent" className="pointer-events-auto cursor-pointer" onClick={() => handleInklingEndpointClick(data.id, 'pdf')} />
                     <circle cx={data.endCircle.cx} cy={data.endCircle.cy} r="10" fill="transparent" className="pointer-events-auto cursor-pointer" onClick={() => handleInklingEndpointClick(data.id, 'pinup')} />
 
@@ -1291,6 +1367,37 @@ export default function Home() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        <Dialog open={!!pendingSnapshot} onOpenChange={(isOpen) => { if (!isOpen) setPendingSnapshot(null); }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Choose a Highlight Color</DialogTitle>
+              <DialogDescription>
+                Select a color for the snapshot's side-bar, or choose no color.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
+              {SNAPSHOT_COLORS.map((color) => (
+                <Tooltip key={color}>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={() => handleColorSelect(color)}
+                      className="h-8 w-8 rounded-full border-2 border-transparent transition-all hover:scale-110 hover:border-primary focus:border-primary focus:outline-none"
+                      style={{ backgroundColor: color }}
+                      aria-label={`Select color ${color}`}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>{color.toUpperCase()}</p>
+                  </TooltipContent>
+                </Tooltip>
+              ))}
+              <Button variant="outline" onClick={() => handleColorSelect(null)}>
+                No Color
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
 
       </div>
     </TooltipProvider>
