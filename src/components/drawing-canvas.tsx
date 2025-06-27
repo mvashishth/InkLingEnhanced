@@ -57,7 +57,7 @@ interface DrawingCanvasProps {
   isProjectLoading: boolean;
   onProjectLoadComplete: () => void;
   toast: (options: { title: string; description: string; variant?: 'default' | 'destructive' }) => void;
-  onSnapshot?: (imageDataUrl: string, pageIndex: number, rect: { relX: number; relY: number; relWidth: number; relHeight: number }, aspectRatio: number) => void;
+  onSnapshot?: (imageDataUrl: string, pageIndex: number, rect: { relX: number; relY: number; relWidth: number; relHeight: number }, aspectRatio: number, initialY: number) => void;
   onNoteCreate?: (rect: { x: number; y: number; width: number; height: number }) => void;
   onCanvasClick?: (pageIndex: number, point: Point, canvas: HTMLCanvasElement) => void;
   snapshotHighlights?: Snapshot[];
@@ -194,6 +194,29 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         }
     }, [tool]);
 
+    const getPathAsSVG = (path: Path) => {
+        if (path.points.length < 2) return '';
+    
+        let d = `M ${path.points[0].x} ${path.points[0].y}`;
+    
+        if (path.tool === 'erase' || path.points.length < 3) {
+            for (let i = 1; i < path.points.length; i++) {
+                d += ` L ${path.points[i].x} ${path.points[i].y}`;
+            }
+        } else {
+            let p1 = path.points[0];
+            let p2 = path.points[1];
+            d += ` Q ${p1.x} ${p1.y} ${(p1.x + p2.x) / 2} ${(p1.y + p2.y) / 2}`;
+            for (let i = 1; i < path.points.length - 1; i++) {
+                p1 = path.points[i];
+                p2 = path.points[i+1];
+                d += ` Q ${p1.x} ${p1.y} ${(p1.x + p2.x) / 2} ${(p1.y + p2.y) / 2}`;
+            }
+            d += ` L ${path.points[path.points.length - 1].x} ${path.points[path.points.length - 1].y}`;
+        }
+        return d;
+    };
+    
     const renderPaths = useCallback((context: CanvasRenderingContext2D, paths: Path[]) => {
       paths.forEach(path => {
         context.strokeStyle = path.color;
@@ -202,33 +225,9 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         context.globalAlpha = path.globalAlpha;
         context.lineCap = 'round';
         context.lineJoin = 'round';
-  
-        if (path.points.length < 2) return;
-  
-        context.beginPath();
-        context.moveTo(path.points[0].x, path.points[0].y);
-  
-        if (path.tool === 'erase' || path.points.length < 3) {
-            for (let i = 1; i < path.points.length; i++) {
-              context.lineTo(path.points[i].x, path.points[i].y);
-            }
-        } else {
-            context.quadraticCurveTo(path.points[1].x, path.points[1].y, (path.points[1].x + path.points[2].x) / 2, (path.points[1].y + path.points[2].y) / 2);
-            for (let i = 2; i < path.points.length - 2; i++) {
-                const xc = (path.points[i].x + path.points[i + 1].x) / 2;
-                const yc = (path.points[i].y + path.points[i + 1].y) / 2;
-                context.quadraticCurveTo(path.points[i].x, path.points[i].y, xc, yc);
-            }
-            if (path.points.length > 2) {
-                context.quadraticCurveTo(
-                    path.points[path.points.length - 2].x,
-                    path.points[path.points.length - 2].y,
-                    path.points[path.points.length - 1].x,
-                    path.points[path.points.length - 1].y
-                );
-            }
-        }
-        context.stroke();
+    
+        const p = new Path2D(getPathAsSVG(path));
+        context.stroke(p);
       });
       context.globalCompositeOperation = 'source-over';
       context.globalAlpha = 1.0;
@@ -298,13 +297,15 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
     useEffect(() => {
       if (initialAnnotations && isProjectLoading) {
         try {
-            pageHistoryRef.current = new Map(initialAnnotations.history);
-            pageHistoryIndexRef.current = new Map(initialAnnotations.historyIndex);
+            const pageHistoryMap = new Map(initialAnnotations.history);
+            const pageHistoryIndexMap = new Map(initialAnnotations.historyIndex);
+
+            pageHistoryRef.current = pageHistoryMap;
+            pageHistoryIndexRef.current = pageHistoryIndexMap;
 
             const restorePromises = displayCanvasRefs.current.map(async (canvas, pageIndex) => {
-                if (canvas) {
+                if (canvas && pageHistoryMap.has(pageIndex)) {
                     return new Promise<void>((resolve) => {
-                        // Use a timeout to ensure the canvas has been sized correctly
                         setTimeout(() => {
                             redrawCanvas(pageIndex);
                             updateHistoryButtons(pageIndex);
@@ -371,16 +372,7 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
       const context = canvas?.getContext('2d');
       if (!context) return;
   
-      // Redraw everything for live preview
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      const historyStack = pageHistoryRef.current.get(pageIndex);
-      const historyIdx = pageHistoryIndexRef.current.get(pageIndex);
-      if (historyStack && historyIdx !== undefined && historyIdx > -1) {
-          const pathsToDraw = historyStack[historyIdx];
-          if (pathsToDraw) {
-              renderPaths(context, pathsToDraw);
-          }
-      }
+      redrawCanvas(pageIndex);
       renderPaths(context, [currentPathRef.current]);
     };
 
@@ -400,39 +392,44 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
           try {
             const page = await pdfDoc.getPage(pageIndex + 1);
             const displayCanvas = displayCanvasRefs.current[pageIndex];
+            const pageElement = pageContainerRef.current?.querySelectorAll('.page-wrapper')[pageIndex] as (HTMLDivElement | undefined);
+            const pageImage = pageElement?.querySelector('.page-image') as (HTMLImageElement | undefined);
 
-            if (!displayCanvas) {
+            if (!displayCanvas || !pageElement || !pageImage) {
               setSelection(null);
               isDrawingRef.current = false;
               return;
             }
             
-            const { width: renderWidth, height: renderHeight } = displayCanvas;
+            const scrollContainer = pageContainerRef.current;
+            if (!scrollContainer) {
+              setSelection(null);
+              isDrawingRef.current = false;
+              return;
+            }
+            const pageRect = pageElement.getBoundingClientRect();
+            const containerRect = scrollContainer.getBoundingClientRect();
+            const initialY = pageRect.top - containerRect.top + y;
+            
+            const { width: renderWidth, height: renderHeight } = pageImage.getBoundingClientRect();
             const viewport = page.getViewport({ scale: 1.0 });
             const masterWidth = viewport.width;
             
-            const sx = x * (masterWidth / renderWidth);
-            const sy = y * (masterWidth / renderWidth); // Use width for scale to maintain aspect
-            const sWidth = width * (masterWidth / renderWidth);
-            const sHeight = height * (masterWidth / renderWidth);
+            const scale = masterWidth / renderWidth;
+            const sx = Math.round(x * scale);
+            const sy = Math.round(y * scale);
+            const sWidth = Math.round(width * scale);
+            const sHeight = Math.round(height * scale);
 
-            const sx1 = Math.round(sx);
-            const sy1 = Math.round(sy);
-            const sx2 = Math.round(sx + sWidth);
-            const sy2 = Math.round(sy + sHeight);
-
-            const finalWidth = sx2 - sx1;
-            const finalHeight = sy2 - sy1;
-
-            if (finalWidth <= 0 || finalHeight <= 0) {
+            if (sWidth <= 0 || sHeight <= 0) {
               setSelection(null);
               isDrawingRef.current = false;
               return;
             }
 
             const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = finalWidth;
-            tempCanvas.height = finalHeight;
+            tempCanvas.width = sWidth;
+            tempCanvas.height = sHeight;
             const tempCtx = tempCanvas.getContext('2d');
 
             if (tempCtx) {
@@ -446,8 +443,8 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
 
                 tempCtx.drawImage(
                   pdfRenderCanvas,
-                  sx1, sy1, finalWidth, finalHeight,
-                  0, 0, finalWidth, finalHeight
+                  sx, sy, sWidth, sHeight,
+                  0, 0, sWidth, sHeight
                 );
               }
               
@@ -457,9 +454,8 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
               
               if(pathsToDraw.length > 0) {
                 tempCtx.save();
-                tempCtx.translate(-sx1, -sy1);
+                tempCtx.translate(-sx, -sy);
                 
-                const scale = masterWidth / renderWidth;
                 const scaledPaths = pathsToDraw.map(path => ({
                   ...path,
                   size: path.size * scale,
@@ -471,7 +467,7 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
               }
               
               const dataUrl = tempCanvas.toDataURL('image/png');
-              const aspectRatio = finalWidth > 0 ? finalHeight / finalWidth : 1;
+              const aspectRatio = sWidth > 0 ? sHeight / sWidth : 1;
               const sourceRelRect = {
                 relX: x / renderWidth,
                 relY: y / renderHeight,
@@ -479,7 +475,7 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
                 relHeight: height / renderHeight,
               };
 
-              onSnapshot(dataUrl, pageIndex, sourceRelRect, aspectRatio);
+              onSnapshot(dataUrl, pageIndex, sourceRelRect, aspectRatio, initialY);
             }
           } catch (error) {
             console.error("Failed to create snapshot:", error);
@@ -582,9 +578,9 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
       const newPath: Path = {
         tool,
         points: [point],
-        color: tool === 'draw' ? penColor : highlighterColor,
+        color: tool === 'draw' ? penColor : tool === 'highlight' ? highlighterColor : '#000000',
         size: tool === 'draw' ? penSize : tool === 'highlight' ? highlighterSize : eraserSize,
-        globalAlpha: tool === 'highlight' ? 0.2 : 1.0,
+        globalAlpha: tool === 'highlight' ? 0.3 : 1.0,
         compositeOperation: tool === 'erase' ? 'destination-out' : 'source-over',
       };
       currentPathRef.current = newPath;

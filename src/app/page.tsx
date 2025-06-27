@@ -126,13 +126,14 @@ interface PendingSnapshot {
   sourcePage: number;
   sourceRelRect: { relX: number; relY: number; relWidth: number; relHeight: number };
   aspectRatio: number;
+  initialY: number;
 }
 
 export default function Home() {
   const [tool, setTool] = React.useState<Tool | null>(null);
   const [penSize, setPenSize] = React.useState(5);
   const [penColor, setPenColor] = React.useState(COLORS[0]);
-  const [highlighterColor, setHighlighterColor] = React.useState(COLORS[3]);
+  const [highlighterColor, setHighlighterColor] = React.useState(HIGHLIGHT_COLORS[3]);
   const [eraserSize, setEraserSize] = React.useState(20);
   const [highlighterSize, setHighlighterSize] = React.useState(20);
   
@@ -219,15 +220,13 @@ export default function Home() {
     }
 
     const snapshotsWithBase64 = await Promise.all(snapshots.map(async (snapshot) => {
-        const blob = await fetch(snapshot.imageDataUrl).then(r => r.blob());
-        const dataUrl = await blobToDataUrl(blob);
-        return { ...snapshot, imageDataUrl: dataUrl };
+        const blob = await dataUrlToBlob(snapshot.imageDataUrl);
+        return { ...snapshot, imageDataUrl: blob };
     }));
 
     const uploadedImagesWithBase64 = await Promise.all(uploadedImages.map(async (image) => {
-        const blob = await fetch(image.imageDataUrl).then(r => r.blob());
-        const dataUrl = await blobToDataUrl(blob);
-        return { ...image, imageDataUrl: dataUrl };
+        const blob = await dataUrlToBlob(image.imageDataUrl);
+        return { ...image, imageDataUrl: blob };
     }));
 
 
@@ -521,13 +520,15 @@ export default function Home() {
     imageDataUrl: string,
     sourcePage: number,
     sourceRelRect: { relX: number; relY: number; relWidth: number; relHeight: number },
-    aspectRatio: number
+    aspectRatio: number,
+    initialY: number
   ) => {
     setPendingSnapshot({
       imageDataUrl,
       sourcePage,
       sourceRelRect,
       aspectRatio,
+      initialY
     });
     setTool(null);
   }, []);
@@ -537,12 +538,14 @@ export default function Home() {
 
     const blob = await dataUrlToBlob(pendingSnapshot.imageDataUrl);
     const blobUrl = URL.createObjectURL(blob);
+    
+    const pinupScrollTop = pinupScrollContainerRef.current?.scrollTop || 0;
 
     const newSnapshot: Snapshot = {
       id: `snapshot_${Date.now()}`,
       imageDataUrl: blobUrl,
       x: 50,
-      y: 50,
+      y: pendingSnapshot.initialY + pinupScrollTop,
       width: 250,
       height: 250 * pendingSnapshot.aspectRatio,
       sourcePage: pendingSnapshot.sourcePage,
@@ -1133,7 +1136,7 @@ export default function Home() {
                         <div className="flex items-center gap-3">
                             <span className="text-sm text-muted-foreground">Color:</span>
                             <div className="flex flex-row flex-wrap justify-center gap-2">
-                                {COLORS.map((color) => (
+                                {(tool === 'draw' ? COLORS : HIGHLIGHT_COLORS).map((color) => (
                                     <Tooltip key={color}>
                                         <TooltipTrigger asChild>
                                             <button
