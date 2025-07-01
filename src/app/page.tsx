@@ -68,13 +68,12 @@ const COLORS = ['#1A1A1A', '#EF4444', '#3B82F6', '#22C55E', '#EAB308'];
 const HIGHLIGHT_COLORS = ['#FEF3C7', '#FCA5A5', '#93C5FD', '#A7F3D0', '#FDE68A', '#D8B4FE', '#F9A8D4', '#FDBA74', '#CBD5E1', '#6EE7B7', '#A5B4FC'];
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    const len = bytes.byteLength;
-    for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
 interface PdfPoint {
@@ -389,7 +388,10 @@ export default function Home() {
       for (let i = 1; i <= numPages; i++) {
         setPdfLoadProgress(Math.round((i / numPages) * 100));
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 1.0 }); 
+        
+        const originalViewport = page.getViewport({ scale: 1.0 });
+        const scale = 2000 / originalViewport.width;
+        const viewport = page.getViewport({ scale });
 
         const canvas = document.createElement('canvas');
         canvas.width = viewport.width;
