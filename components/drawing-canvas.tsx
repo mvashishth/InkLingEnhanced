@@ -448,9 +448,11 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
             const initialY = pageRect.top - containerRect.top + y;
             
             const { width: renderWidth, height: renderHeight } = pageImage.getBoundingClientRect();
-            const viewport = page.getViewport({ scale: 1.0 });
-            const masterWidth = viewport.width;
-            const pdfScale = masterWidth / renderWidth;
+            
+            const originalViewport = page.getViewport({ scale: 1.0 });
+            const snapshotScale = 2000 / originalViewport.width;
+            const viewport = page.getViewport({ scale: snapshotScale });
+            const pdfScale = viewport.width / renderWidth;
             
             const sx = Math.round(x * pdfScale);
             const sy = Math.round(y * pdfScale);
@@ -478,7 +480,7 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
                 const baseLayerCtx = baseLayerCanvas.getContext('2d');
                 
                 if (baseLayerCtx) {
-                    await page.render({ canvasContext: baseLayerCtx, viewport }).promise;
+                    await page.render({ canvasContext: baseLayerCtx, viewport: viewport }).promise;
                     tempCtx.drawImage(
                         baseLayerCanvas,
                         sx, sy, sWidth, sHeight,
