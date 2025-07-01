@@ -178,17 +178,6 @@ export default function Home() {
   const pinupTool = ['draw', 'erase', 'highlight', 'note'].includes(tool || '') ? tool : null;
 
   React.useEffect(() => {
-    const savedCount = localStorage.getItem('globalOverwriteCount');
-    if (savedCount && !isNaN(parseInt(savedCount, 10))) {
-      setOverwriteCount(parseInt(savedCount, 10));
-    }
-  }, []);
-
-  React.useEffect(() => {
-    localStorage.setItem('globalOverwriteCount', overwriteCount.toString());
-  }, [overwriteCount]);
-
-  React.useEffect(() => {
     setCanUseFSApi(
       typeof window !== 'undefined' &&
       'showOpenFilePicker' in window &&
@@ -253,6 +242,8 @@ export default function Home() {
       
       const pdfDataBase64 = arrayBufferToBase64(originalPdfFile.slice(0));
 
+      const nextOverwriteCount = fileHandle ? overwriteCount + 1 : 1;
+
       const projectData = {
           originalPdfFileName: originalPdfFileName,
           pdfDataBase64: pdfDataBase64,
@@ -264,6 +255,7 @@ export default function Home() {
           uploadedImages: uploadedImages,
           pinupBgColor: pinupBgColor,
           viewerWidth: viewerWidth,
+          overwriteCount: nextOverwriteCount,
           fileType: 'inkling-project'
       };
       
@@ -301,7 +293,7 @@ export default function Home() {
               await writable.write(blob);
               await writable.close();
               toast({ title: "Project Saved", description: `Saved to ${handle.name}` });
-              setOverwriteCount(prev => prev + 1);
+              setOverwriteCount(nextOverwriteCount);
 
           } catch (error) {
               const err = error as Error;
@@ -454,6 +446,7 @@ export default function Home() {
     setPinupAnnotationDataToLoad(projectJson.pinupAnnotations || null);
     setPinupBgColor(projectJson.pinupBgColor || '#ffffff');
     setViewerWidth(projectJson.viewerWidth || 40);
+    setOverwriteCount(projectJson.overwriteCount || 0);
     
     await loadPdf(arrayBuffer.slice(0), true);
   };
@@ -488,6 +481,7 @@ export default function Home() {
             const arrayBuffer = await file.arrayBuffer();
             setOriginalPdfFile(arrayBuffer.slice(0));
             setOriginalPdfFileName(file.name);
+            setOverwriteCount(0);
             await loadPdf(arrayBuffer.slice(0), false);
         }
     } catch (error) {
@@ -544,6 +538,7 @@ export default function Home() {
         const arrayBuffer = await file.arrayBuffer();
         setOriginalPdfFile(arrayBuffer.slice(0));
         setOriginalPdfFileName(file.name);
+        setOverwriteCount(0);
         await loadPdf(arrayBuffer.slice(0), false);
     } else {
         toast({
@@ -618,6 +613,7 @@ export default function Home() {
     setInklings([]);
     setPinupAnnotationDataToLoad(null);
     setFileHandle(null);
+    setOverwriteCount(0);
 
     setIsClearConfirmOpen(false);
   };
