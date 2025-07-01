@@ -70,7 +70,8 @@ const HIGHLIGHT_COLORS = ['#FEF3C7', '#FCA5A5', '#93C5FD', '#A7F3D0', '#FDE68A',
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = '';
   const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.byteLength; i++) {
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
@@ -175,6 +176,17 @@ export default function Home() {
   
   const pdfTool = ['draw', 'erase', 'highlight', 'snapshot', 'inkling'].includes(tool || '') ? tool : null;
   const pinupTool = ['draw', 'erase', 'highlight', 'note'].includes(tool || '') ? tool : null;
+
+  React.useEffect(() => {
+    const savedCount = localStorage.getItem('globalOverwriteCount');
+    if (savedCount && !isNaN(parseInt(savedCount, 10))) {
+      setOverwriteCount(parseInt(savedCount, 10));
+    }
+  }, []);
+
+  React.useEffect(() => {
+    localStorage.setItem('globalOverwriteCount', overwriteCount.toString());
+  }, [overwriteCount]);
 
   React.useEffect(() => {
     setCanUseFSApi(
@@ -282,7 +294,6 @@ export default function Home() {
                       }],
                   });
                   setFileHandle(handle);
-                  setOverwriteCount(0);
               }
 
               const writable = await handle.createWritable();
@@ -311,7 +322,6 @@ export default function Home() {
           }
       } else {
           legacySave(jsonString);
-          setOverwriteCount(0);
       }
     } finally {
       setIsSaving(false);
@@ -473,10 +483,8 @@ export default function Home() {
             const projectData = JSON.parse(jsonString);
             await loadProjectData(projectData, file.name);
             setFileHandle(handle);
-            setOverwriteCount(0);
         } else if (file.type === 'application/pdf') {
             setFileHandle(null);
-            setOverwriteCount(0);
             const arrayBuffer = await file.arrayBuffer();
             setOriginalPdfFile(arrayBuffer.slice(0));
             setOriginalPdfFileName(file.name);
@@ -512,7 +520,6 @@ export default function Home() {
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     setFileHandle(null);
-    setOverwriteCount(0);
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -611,7 +618,6 @@ export default function Home() {
     setInklings([]);
     setPinupAnnotationDataToLoad(null);
     setFileHandle(null);
-    setOverwriteCount(0);
 
     setIsClearConfirmOpen(false);
   };
