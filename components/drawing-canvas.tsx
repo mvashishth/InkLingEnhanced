@@ -67,6 +67,7 @@ interface DrawingCanvasProps {
 interface PageProps {
   pageDataUrl: string;
   index: number;
+  totalPages: number;
   tool: DrawingCanvasProps['tool'];
   currentSelection: { pageIndex: number; startX: number; startY: number; endX: number; endY: number} | null;
   displayCanvasRefs: React.MutableRefObject<(HTMLCanvasElement | null)[]>;
@@ -80,6 +81,7 @@ interface PageProps {
 const Page = React.memo(({ 
   pageDataUrl, 
   index, 
+  totalPages,
   tool,
   currentSelection, 
   displayCanvasRefs, 
@@ -116,7 +118,7 @@ const Page = React.memo(({
     }, [index, setupCanvases, pageContainerRef, pageDataUrl]);
 
     return (
-        <div className="relative shadow-lg my-4 mx-auto w-fit page-wrapper">
+        <div className="relative shadow-lg mx-auto w-fit page-wrapper">
             <img ref={imgRef} src={pageDataUrl} alt={`Page ${index + 1}`} className="block pointer-events-none w-full h-auto max-w-[calc(100vw-2rem)] page-image" data-ai-hint="pdf page" />
             <canvas
                 ref={(el) => (displayCanvasRefs.current[index] = el)}
@@ -168,7 +170,6 @@ Page.displayName = 'Page';
 export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
   ({ pages, tool, penColor, penSize, eraserSize, highlighterSize, highlighterColor, onHistoryChange, initialAnnotations, isProjectLoading, onProjectLoadComplete, toast, onSnapshot, onNoteCreate, onCanvasClick, snapshotHighlights, pdfDoc }, ref) => {
     const isDrawingRef = useRef(false);
-    const hasMovedRef = useRef(false);
 
     const pageContainerRef = useRef<HTMLDivElement>(null);
     const displayCanvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
@@ -196,22 +197,18 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
 
     const getPathAsSVG = useCallback((path: Path): Path2D => {
         const p = new Path2D();
-        if (path.points.length === 0) return p;
-
-        let points = path.points;
+        const points = path.points;
 
         if (points.length < 2) {
             if (points.length === 1) p.rect(points[0].x - 0.5, points[0].y - 0.5, 1, 1);
             return p;
         }
-        
+
         p.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length - 1; i++) {
-            const c = (points[i].x + points[i+1].x) / 2;
-            const d = (points[i].y + points[i+1].y) / 2;
-            p.quadraticCurveTo(points[i].x, points[i].y, c, d);
+        for(let i = 0; i < points.length; i++) {
+            p.lineTo(points[i].x, points[i].y);
         }
-        p.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+
         return p;
     }, []);
     
@@ -268,6 +265,7 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
     }, [onHistoryChange]);
 
     const commitHistory = useCallback((pageIndex: number, newPath: Path) => {
+        const HISTORY_LIMIT = 11; // Stores the initial empty state + 10 actions
         const canvas = displayCanvasRefs.current[pageIndex];
         if (!canvas || canvas.width === 0) return;
 
@@ -284,8 +282,12 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         const currentPaths = historyStack[currentIndex] ?? [];
         const newPaths = [...currentPaths, relativePath];
     
-        const newHistoryStack = historyStack.slice(0, currentIndex + 1);
+        let newHistoryStack = historyStack.slice(0, currentIndex + 1);
         newHistoryStack.push(newPaths);
+
+        if (newHistoryStack.length > HISTORY_LIMIT) {
+            newHistoryStack = newHistoryStack.slice(newHistoryStack.length - HISTORY_LIMIT);
+        }
     
         pageHistoryRef.current.set(pageIndex, newHistoryStack);
         pageHistoryIndexRef.current.set(pageIndex, newHistoryStack.length - 1);
@@ -381,14 +383,6 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
       const point = getPoint(e, pageIndex);
       currentPathRef.current.points.push(point);
 
-      if (!hasMovedRef.current) {
-        const p1 = currentPathRef.current.points[0];
-        const p2 = currentPathRef.current.points[currentPathRef.current.points.length - 1];
-        if (p1 && p2 && (Math.abs(p1.x - p2.x) > 2 || Math.abs(p1.y - p2.y) > 2)) {
-          hasMovedRef.current = true;
-        }
-      }
-      
       const canvas = displayCanvasRefs.current[pageIndex];
       const context = canvas?.getContext('2d');
       if (!context) return;
@@ -568,7 +562,7 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         return;
       }
 
-      if (currentPathRef.current && hasMovedRef.current) {
+      if (currentPathRef.current) {
         commitHistory(pageIndex, currentPathRef.current);
       }
 
@@ -629,7 +623,6 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
       
       e.preventDefault();
       isDrawingRef.current = true;
-      hasMovedRef.current = false;
       lastActivePageRef.current = pageIndex;
       const point = getPoint(e, pageIndex);
       
@@ -836,10 +829,11 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
       >
         <div className="max-w-5xl mx-auto">
             {pages.map((pageDataUrl, index) => (
+              <div key={index} className="my-4">
                 <Page 
-                  key={index} 
                   pageDataUrl={pageDataUrl} 
                   index={index} 
+                  totalPages={pages.length}
                   tool={tool}
                   currentSelection={selection}
                   displayCanvasRefs={displayCanvasRefs}
@@ -849,6 +843,10 @@ export const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
                   setupCanvases={setupCanvases}
                   snapshotHighlights={snapshotHighlights}
                 />
+                <div className="text-center text-sm text-muted-foreground pt-2">
+                    Page {index + 1} / {pages.length}
+                </div>
+              </div>
             ))}
         </div>
       </div>

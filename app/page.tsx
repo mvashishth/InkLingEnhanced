@@ -70,7 +70,8 @@ const HIGHLIGHT_COLORS = ['#FEF3C7', '#FCA5A5', '#93C5FD', '#A7F3D0', '#FDE68A',
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = '';
   const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.byteLength; i++) {
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
@@ -241,6 +242,8 @@ export default function Home() {
       
       const pdfDataBase64 = arrayBufferToBase64(originalPdfFile.slice(0));
 
+      const nextOverwriteCount = fileHandle ? overwriteCount + 1 : 1;
+
       const projectData = {
           originalPdfFileName: originalPdfFileName,
           pdfDataBase64: pdfDataBase64,
@@ -252,6 +255,7 @@ export default function Home() {
           uploadedImages: uploadedImages,
           pinupBgColor: pinupBgColor,
           viewerWidth: viewerWidth,
+          overwriteCount: nextOverwriteCount,
           fileType: 'inkling-project'
       };
       
@@ -282,7 +286,6 @@ export default function Home() {
                       }],
                   });
                   setFileHandle(handle);
-                  setOverwriteCount(0);
               }
 
               const writable = await handle.createWritable();
@@ -290,7 +293,7 @@ export default function Home() {
               await writable.write(blob);
               await writable.close();
               toast({ title: "Project Saved", description: `Saved to ${handle.name}` });
-              setOverwriteCount(prev => prev + 1);
+              setOverwriteCount(nextOverwriteCount);
 
           } catch (error) {
               const err = error as Error;
@@ -311,7 +314,6 @@ export default function Home() {
           }
       } else {
           legacySave(jsonString);
-          setOverwriteCount(0);
       }
     } finally {
       setIsSaving(false);
@@ -444,6 +446,7 @@ export default function Home() {
     setPinupAnnotationDataToLoad(projectJson.pinupAnnotations || null);
     setPinupBgColor(projectJson.pinupBgColor || '#ffffff');
     setViewerWidth(projectJson.viewerWidth || 40);
+    setOverwriteCount(projectJson.overwriteCount || 0);
     
     await loadPdf(arrayBuffer.slice(0), true);
   };
@@ -473,13 +476,12 @@ export default function Home() {
             const projectData = JSON.parse(jsonString);
             await loadProjectData(projectData, file.name);
             setFileHandle(handle);
-            setOverwriteCount(0);
         } else if (file.type === 'application/pdf') {
             setFileHandle(null);
-            setOverwriteCount(0);
             const arrayBuffer = await file.arrayBuffer();
             setOriginalPdfFile(arrayBuffer.slice(0));
             setOriginalPdfFileName(file.name);
+            setOverwriteCount(0);
             await loadPdf(arrayBuffer.slice(0), false);
         }
     } catch (error) {
@@ -512,7 +514,6 @@ export default function Home() {
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     setFileHandle(null);
-    setOverwriteCount(0);
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -537,6 +538,7 @@ export default function Home() {
         const arrayBuffer = await file.arrayBuffer();
         setOriginalPdfFile(arrayBuffer.slice(0));
         setOriginalPdfFileName(file.name);
+        setOverwriteCount(0);
         await loadPdf(arrayBuffer.slice(0), false);
     } else {
         toast({
